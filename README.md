@@ -92,3 +92,42 @@ This repo is ready to deploy as a Bun service. Zeabur only needs:
 - public port: `PORT`
 
 If you prefer container deployment, use the included `Dockerfile`.
+
+### Recommended Zeabur setup
+
+1. Create one service for this gateway.
+2. Keep your app services internal only, for example `api`, `frontend`, `realtime`.
+3. Expose only the gateway service publicly.
+4. Set `PROXY_ROUTES` to map public paths to internal service URLs.
+
+Example:
+
+```env
+PORT=3000
+PROXY_ROUTES=[{"prefix":"/api","target":"http://api:8080"},{"prefix":"/app","target":"http://frontend:3000"},{"prefix":"/socket.io","target":"http://realtime:3001"},{"prefix":"/ws","target":"http://realtime:3001"}]
+```
+
+Notes:
+
+- `socket.io` can use both HTTP long-polling and WebSocket through this gateway
+- if your upstream service expects the original prefix, do not strip it in the app; this gateway removes the matched prefix before forwarding
+- keep health checks on the gateway itself, for example `/health`
+
+## Performance notes
+
+This gateway is optimized as a pragmatic Bun implementation, not as a maximum-benchmark proxy.
+
+Current performance-oriented choices:
+
+- routes are parsed and compiled once at startup
+- route matching uses a prebuilt prefix matcher instead of scanning every route on every request
+- HTTP target URL and WebSocket target URL are built from precomputed route fields
+- HTTP request and response bodies are streamed through
+- WebSocket messages are relayed without app-level buffering in the normal path
+
+Still possible if you need higher throughput:
+
+- benchmark with your real route count and connection mix
+- add per-route or global timeout controls
+- add overload protection and explicit backpressure policy for heavy WebSocket fan-in
+- compare this Bun gateway against nginx, caddy, or envoy if raw proxy throughput is the main goal

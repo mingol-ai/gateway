@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { parseRoutesFromEnv } from "./config";
 import {
   buildTargetUrl,
+  buildTargetWebSocketUrl,
   createUpstreamWebSocketHeaders,
   isWebSocketUpgradeRequest,
   matchRoute,
-  toWebSocketUrl,
 } from "./proxy";
 
 describe("parseRoutesFromEnv", () => {
@@ -17,7 +17,7 @@ describe("parseRoutesFromEnv", () => {
       ]),
     });
 
-    expect(routes.map((route) => route.normalizedPrefix)).toEqual([
+    expect(routes.routes.map((route) => route.normalizedPrefix)).toEqual([
       "/api/admin",
       "/api",
     ]);
@@ -44,15 +44,15 @@ describe("matchRoute", () => {
   });
 
   test("matches exact prefix", () => {
-    expect(matchRoute("/api", routes)?.normalizedPrefix).toBe("/api");
+    expect(matchRoute("/api", routes.matcher)?.normalizedPrefix).toBe("/api");
   });
 
   test("matches nested path", () => {
-    expect(matchRoute("/api/users/1", routes)?.normalizedPrefix).toBe("/api");
+    expect(matchRoute("/api/users/1", routes.matcher)?.normalizedPrefix).toBe("/api");
   });
 
   test("does not match partial segment", () => {
-    expect(matchRoute("/apiv2", routes)).toBeUndefined();
+    expect(matchRoute("/apiv2", routes.matcher)).toBeUndefined();
   });
 });
 
@@ -62,14 +62,14 @@ describe("buildTargetUrl", () => {
       PROXY_ROUTES: JSON.stringify([
         { prefix: "/api", target: "http://api:8080" },
       ]),
-    });
+    }).routes;
 
     const targetUrl = buildTargetUrl(
       new URL("https://example.com/api/users?id=1"),
       route,
     );
 
-    expect(targetUrl.toString()).toBe("http://api:8080/users?id=1");
+    expect(targetUrl).toBe("http://api:8080/users?id=1");
   });
 
   test("supports target base paths", () => {
@@ -77,14 +77,29 @@ describe("buildTargetUrl", () => {
       PROXY_ROUTES: JSON.stringify([
         { prefix: "/api", target: "http://api:8080/internal" },
       ]),
-    });
+    }).routes;
 
     const targetUrl = buildTargetUrl(
       new URL("https://example.com/api/users"),
       route,
     );
 
-    expect(targetUrl.toString()).toBe("http://api:8080/internal/users");
+    expect(targetUrl).toBe("http://api:8080/internal/users");
+  });
+
+  test("supports websocket target URL building", () => {
+    const [route] = parseRoutesFromEnv({
+      PROXY_ROUTES: JSON.stringify([
+        { prefix: "/socket", target: "https://ws.example.com/base" },
+      ]),
+    }).routes;
+
+    expect(
+      buildTargetWebSocketUrl(
+        new URL("https://gateway.example.com/socket/room?id=1"),
+        route,
+      ),
+    ).toBe("wss://ws.example.com/base/room?id=1");
   });
 });
 
@@ -100,11 +115,22 @@ describe("websocket helpers", () => {
   });
 
   test("converts upstream target URL to ws scheme", () => {
-    expect(toWebSocketUrl(new URL("http://api:8080/socket"))).toBe(
-      "ws://api:8080/socket",
+    const [httpRoute] = parseRoutesFromEnv({
+      PROXY_ROUTES: JSON.stringify([
+        { prefix: "/ws", target: "http://api:8080/socket" },
+      ]),
+    }).routes;
+    const [httpsRoute] = parseRoutesFromEnv({
+      PROXY_ROUTES: JSON.stringify([
+        { prefix: "/ws", target: "https://api.example.com/socket" },
+      ]),
+    }).routes;
+
+    expect(buildTargetWebSocketUrl(new URL("https://x/ws"), httpRoute)).toBe(
+      "ws://api:8080/socket/",
     );
-    expect(toWebSocketUrl(new URL("https://api.example.com/socket"))).toBe(
-      "wss://api.example.com/socket",
+    expect(buildTargetWebSocketUrl(new URL("https://x/ws"), httpsRoute)).toBe(
+      "wss://api.example.com/socket/",
     );
   });
 

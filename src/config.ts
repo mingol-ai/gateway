@@ -6,7 +6,26 @@ export type RouteConfig = {
 export type ParsedRoute = {
   prefix: string;
   normalizedPrefix: string;
+  prefixLength: number;
   target: URL;
+  targetBasePath: string;
+  targetHttpBase: string;
+  targetWebSocketBase: string;
+};
+
+type RouteMatcherNode = {
+  children: Map<string, RouteMatcherNode>;
+  route?: ParsedRoute;
+};
+
+export type RouteMatcher = {
+  rootRoute?: ParsedRoute;
+  tree: RouteMatcherNode;
+};
+
+export type GatewayConfig = {
+  matcher: RouteMatcher;
+  routes: ParsedRoute[];
 };
 
 const ROUTES_ENV_NAME = "PROXY_ROUTES";
@@ -40,15 +59,20 @@ function parseRouteEntry(entry: RouteConfig, index: number): ParsedRoute {
 
   const normalizedPrefix = normalizePrefix(entry.prefix);
   const target = new URL(entry.target);
+  const targetBasePath = normalizeTargetBasePath(target.pathname);
 
   return {
     prefix: entry.prefix,
     normalizedPrefix,
+    prefixLength: normalizedPrefix.length,
     target,
+    targetBasePath,
+    targetHttpBase: `${target.origin}${targetBasePath}`,
+    targetWebSocketBase: `${toWebSocketOrigin(target)}${targetBasePath}`,
   };
 }
 
-export function parseRoutesFromEnv(env = process.env): ParsedRoute[] {
+export function parseRoutesFromEnv(env = process.env): GatewayConfig {
   const raw = env[ROUTES_ENV_NAME];
 
   if (!raw) {
@@ -93,8 +117,61 @@ export function parseRoutesFromEnv(env = process.env): ParsedRoute[] {
     );
   }
 
-  return routes.sort(
+  routes.sort(
     (left, right) =>
       right.normalizedPrefix.length - left.normalizedPrefix.length,
   );
+
+  return {
+    routes,
+    matcher: buildRouteMatcher(routes),
+  };
+}
+
+function normalizeTargetBasePath(pathname: string): string {
+  if (!pathname || pathname === "/") {
+    return "";
+  }
+
+  return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+}
+
+function toWebSocketOrigin(target: URL): string {
+  if (target.protocol === "https:") {
+    return `wss://${target.host}`;
+  }
+
+  return `ws://${target.host}`;
+}
+
+function buildRouteMatcher(routes: ParsedRoute[]): RouteMatcher {
+  const tree: RouteMatcherNode = {
+    children: new Map<string, RouteMatcherNode>(),
+  };
+  let rootRoute: ParsedRoute | undefined;
+
+  for (const route of routes) {
+    if (route.normalizedPrefix === "/") {
+      rootRoute = route;
+      continue;
+    }
+
+    let node = tree;
+    for (const char of route.normalizedPrefix) {
+      let child = node.children.get(char);
+      if (!child) {
+        child = {
+          children: new Map<string, RouteMatcherNode>(),
+        };
+        node.children.set(char, child);
+      }
+      node = child;
+    }
+    node.route = route;
+  }
+
+  return {
+    rootRoute,
+    tree,
+  };
 }

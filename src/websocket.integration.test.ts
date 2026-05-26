@@ -23,7 +23,7 @@ const upstreamServer = Bun.serve({
 
 const gatewayServer = createGatewayServer({
   port: 0,
-  routes: parseRoutesFromEnv({
+  config: parseRoutesFromEnv({
     PROXY_ROUTES: JSON.stringify([
       {
         prefix: "/socket",
@@ -34,14 +34,16 @@ const gatewayServer = createGatewayServer({
 });
 
 afterAll(() => {
-  gatewayServer.stop(true);
+  gatewayServer.server.stop(true);
   upstreamServer.stop(true);
 });
 
 describe("websocket proxy", () => {
   test("forwards websocket messages in both directions", async () => {
-    const socket = new WebSocket(`ws://127.0.0.1:${gatewayServer.port}/socket`);
-    socket.binaryType = "nodebuffer";
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${gatewayServer.server.port}/socket`,
+    );
+    (socket as any).binaryType = "nodebuffer";
 
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener("open", () => resolve(), { once: true });

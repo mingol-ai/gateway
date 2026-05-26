@@ -1,11 +1,13 @@
+import type { BufferSource as BunBufferSource, ServerWebSocket } from "bun";
+import type { GatewayConfig } from "./config";
 import { parseRoutesFromEnv } from "./config";
 import {
   buildTargetUrl,
+  buildTargetWebSocketUrl,
   createProxyHeaders,
   createUpstreamWebSocketHeaders,
   isWebSocketUpgradeRequest,
   matchRoute,
-  toWebSocketUrl,
 } from "./proxy";
 
 type ProxyWebSocketSession = {
@@ -44,7 +46,7 @@ function closeUpstreamSocket(
 
 function sendToClient(
   ws: ServerWebSocket<ProxyWebSocketSession>,
-  payload: string | ArrayBufferLike | ArrayBufferView,
+  payload: string | BunBufferSource,
 ) {
   if (typeof payload === "string") {
     ws.sendText(payload);
@@ -61,12 +63,12 @@ async function openUpstreamWebSocket(request: Request, targetUrl: URL) {
     .map((protocol) => protocol.trim())
     .filter(Boolean);
 
-  const upstream = new WebSocket(toWebSocketUrl(targetUrl), {
+  const upstream = new WebSocket(targetUrl.toString(), {
     protocols,
     headers: createUpstreamWebSocketHeaders(request),
-  });
+  } as any);
 
-  upstream.binaryType = "nodebuffer";
+  (upstream as any).binaryType = "nodebuffer";
 
   await new Promise<void>((resolve, reject) => {
     upstream.addEventListener("open", () => resolve(), { once: true });
@@ -92,10 +94,20 @@ async function openUpstreamWebSocket(request: Request, targetUrl: URL) {
 
 export function createGatewayServer(options?: {
   port?: number;
-  routes?: ReturnType<typeof parseRoutesFromEnv>;
+  config?: GatewayConfig;
 }) {
   const port = options?.port ?? Number(process.env.PORT ?? 3000);
-  const routes = options?.routes ?? parseRoutesFromEnv();
+  const config = options?.config ?? parseRoutesFromEnv();
+  const healthPayload = {
+    ok: true,
+    routes: config.routes.map((route) => ({
+      prefix: route.normalizedPrefix,
+      target: `${route.target.origin}${route.targetBasePath || "/"}`,
+    })),
+  };
+  const configuredRoutesLine = config.routes
+    .map((route) => `${route.normalizedPrefix} -> ${route.target.toString()}`)
+    .join(", ");
 
   const server = Bun.serve<ProxyWebSocketSession>({
     port,
@@ -103,26 +115,22 @@ export function createGatewayServer(options?: {
       const requestUrl = new URL(request.url);
 
       if (requestUrl.pathname === "/health") {
-        return Response.json({
-          ok: true,
-          routes: routes.map((route) => ({
-            prefix: route.normalizedPrefix,
-            target: route.target.origin + route.target.pathname,
-          })),
-        });
+        return Response.json(healthPayload);
       }
 
-      const matchedRoute = matchRoute(requestUrl.pathname, routes);
+      const matchedRoute = matchRoute(requestUrl.pathname, config.matcher);
 
       if (!matchedRoute) {
         return new Response("No proxy route matched.", { status: 404 });
       }
 
-      const targetUrl = buildTargetUrl(requestUrl, matchedRoute);
-
       if (isWebSocketUpgradeRequest(request)) {
         try {
-          const upstream = await openUpstreamWebSocket(request, targetUrl);
+          const upstreamTargetUrl = buildTargetWebSocketUrl(requestUrl, matchedRoute);
+          const upstream = await openUpstreamWebSocket(
+            request,
+            new URL(upstreamTargetUrl),
+          );
           const session: ProxyWebSocketSession = {
             upstream,
             clientOpened: false,
@@ -188,25 +196,26 @@ export function createGatewayServer(options?: {
             {
               error: "Bad gateway",
               message: error instanceof Error ? error.message : "Unknown error",
-              target: toWebSocketUrl(targetUrl),
+              target: buildTargetWebSocketUrl(requestUrl, matchedRoute),
             },
             { status: 502 },
           );
         }
       }
 
+      const targetUrl = buildTargetUrl(requestUrl, matchedRoute);
       const upstreamRequest = new Request(targetUrl, {
         method: request.method,
         headers: createProxyHeaders(
           request,
           requestUrl,
-          targetUrl,
+          matchedRoute.target.host,
           matchedRoute.normalizedPrefix,
         ),
         body: request.body,
         redirect: "manual",
         duplex: "half",
-      });
+      } as any);
 
       try {
         return await fetch(upstreamRequest);
@@ -248,19 +257,23 @@ export function createGatewayServer(options?: {
       },
       ping(ws, data) {
         if (ws.data.upstream.readyState === WebSocket.OPEN) {
-          ws.data.upstream.ping(data);
+          (ws.data.upstream as any).ping(data);
         }
       },
       pong(ws, data) {
         if (ws.data.upstream.readyState === WebSocket.OPEN) {
-          ws.data.upstream.pong(data);
+          (ws.data.upstream as any).pong(data);
         }
       },
       idleTimeout: 0,
     },
   });
 
-  return server;
+  return {
+    server,
+    config,
+    configuredRoutesLine,
+  };
 }
 
 const sessionClientMap = new WeakMap<
@@ -269,13 +282,9 @@ const sessionClientMap = new WeakMap<
 >();
 
 if (import.meta.main) {
-  const routes = parseRoutesFromEnv();
-  const server = createGatewayServer({ routes });
+  const config = parseRoutesFromEnv();
+  const gateway = createGatewayServer({ config });
 
-  console.log(`Gateway listening on port ${server.port}`);
-  console.log(
-    `Configured routes: ${routes
-      .map((route) => `${route.normalizedPrefix} -> ${route.target.toString()}`)
-      .join(", ")}`,
-  );
+  console.log(`Gateway listening on port ${gateway.server.port}`);
+  console.log(`Configured routes: ${gateway.configuredRoutesLine}`);
 }

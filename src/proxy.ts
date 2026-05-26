@@ -1,53 +1,62 @@
-import type { ParsedRoute } from "./config";
+import type { ParsedRoute, RouteMatcher } from "./config";
 
-export function matchRoute(pathname: string, routes: ParsedRoute[]) {
-  return routes.find((route) => {
-    if (route.normalizedPrefix === "/") {
-      return true;
+export function matchRoute(pathname: string, matcher: RouteMatcher) {
+  let matched = matcher.rootRoute;
+  let node = matcher.tree;
+
+  for (let index = 0; index < pathname.length; index += 1) {
+    const child = node.children.get(pathname[index]);
+
+    if (!child) {
+      break;
     }
 
-    return (
-      pathname === route.normalizedPrefix ||
-      pathname.startsWith(`${route.normalizedPrefix}/`)
-    );
-  });
+    node = child;
+
+    if (node.route) {
+      const nextChar = pathname[index + 1];
+      if (nextChar === undefined || nextChar === "/") {
+        matched = node.route;
+      }
+    }
+  }
+
+  return matched;
 }
 
-export function buildTargetUrl(requestUrl: URL, route: ParsedRoute): URL {
-  const target = new URL(route.target.toString());
+export function buildTargetUrl(requestUrl: URL, route: ParsedRoute): string {
   const matchedPrefix = route.normalizedPrefix;
   const strippedPath =
     matchedPrefix === "/"
       ? requestUrl.pathname
-      : requestUrl.pathname.slice(matchedPrefix.length) || "/";
+      : requestUrl.pathname.slice(route.prefixLength) || "/";
 
-  target.pathname = joinPaths(target.pathname, strippedPath);
-  target.search = requestUrl.search;
-
-  return target;
+  return `${route.targetHttpBase}${joinPaths(strippedPath)}${requestUrl.search}`;
 }
 
-function joinPaths(basePath: string, suffixPath: string): string {
-  const normalizedBase = basePath.endsWith("/")
-    ? basePath.slice(0, -1)
-    : basePath;
-  const normalizedSuffix = suffixPath.startsWith("/")
-    ? suffixPath
-    : `/${suffixPath}`;
+export function buildTargetWebSocketUrl(requestUrl: URL, route: ParsedRoute): string {
+  const matchedPrefix = route.normalizedPrefix;
+  const strippedPath =
+    matchedPrefix === "/"
+      ? requestUrl.pathname
+      : requestUrl.pathname.slice(route.prefixLength) || "/";
 
-  const joined = `${normalizedBase}${normalizedSuffix}`;
-  return joined === "" ? "/" : joined;
+  return `${route.targetWebSocketBase}${joinPaths(strippedPath)}${requestUrl.search}`;
+}
+
+function joinPaths(suffixPath: string): string {
+  return suffixPath.startsWith("/") ? suffixPath : `/${suffixPath}`;
 }
 
 export function createProxyHeaders(
   request: Request,
   requestUrl: URL,
-  targetUrl: URL,
+  targetHost: string,
   forwardedPrefix: string,
 ): Headers {
   const headers = new Headers(request.headers);
 
-  headers.set("host", targetUrl.host);
+  headers.set("host", targetHost);
   headers.set("x-forwarded-host", requestUrl.host);
   headers.set("x-forwarded-port", requestUrl.port || defaultPortForProtocol(requestUrl.protocol));
   headers.set("x-forwarded-proto", requestUrl.protocol.replace(":", ""));
