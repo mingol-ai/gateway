@@ -55,6 +55,15 @@ Rules:
 - longer prefixes win first, so `/api/admin` is matched before `/api`
 - `target` can include a base path, for example `http://api:8080/internal`
 
+### Optional WebSocket tuning
+
+These are optional and mainly useful when you want to compare behavior under different WebSocket pressure patterns:
+
+- `WS_MAX_PAYLOAD_LENGTH`
+- `WS_BACKPRESSURE_LIMIT`
+- `WS_CLOSE_ON_BACKPRESSURE_LIMIT`
+- `WS_IDLE_TIMEOUT`
+
 ## Run locally
 
 ```bash
@@ -131,3 +140,39 @@ Still possible if you need higher throughput:
 - add per-route or global timeout controls
 - add overload protection and explicit backpressure policy for heavy WebSocket fan-in
 - compare this Bun gateway against nginx, caddy, or envoy if raw proxy throughput is the main goal
+
+## Benchmarking
+
+Run the built-in benchmark harness:
+
+```bash
+bun run benchmark
+```
+
+The harness spins up:
+
+- a local mock upstream with HTTP, SSE, WebSocket echo, and WebSocket burst endpoints
+- a gateway instance with generated route tables
+- scenario groups that vary:
+  - route count
+  - forwarded header count
+  - HTTP / SSE / WebSocket traffic type
+  - mixed parallel load
+  - WebSocket backpressure settings
+
+Current default matrix:
+
+- route counts: `1`, `100`, `1000`
+- header counts: `0`, `20`, `100`
+- HTTP benchmark: throughput + average/p95 latency
+- SSE benchmark: connection throughput + average connect latency
+- WebSocket benchmark: message throughput + average RTT
+- mixed benchmark: concurrent HTTP + SSE + WebSocket
+- backpressure benchmark: slow WebSocket consumers against upstream burst traffic
+
+Interpretation notes:
+
+- if route count barely moves the numbers, route matching is probably not your bottleneck
+- if header count drops throughput, object/header work is a bigger factor than route lookup
+- if mixed load degrades sharply relative to isolated HTTP or WS runs, cross-traffic contention is real
+- if backpressure scenarios do not diverge, the current message size and client slowness are not enough to trigger the configured limit on your machine

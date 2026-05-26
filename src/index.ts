@@ -1,4 +1,8 @@
-import type { BufferSource as BunBufferSource, ServerWebSocket } from "bun";
+import type {
+  BufferSource as BunBufferSource,
+  ServerWebSocket,
+  WebSocketHandler,
+} from "bun";
 import type { GatewayConfig } from "./config";
 import { parseRoutesFromEnv } from "./config";
 import {
@@ -17,6 +21,11 @@ type ProxyWebSocketSession = {
   clientClosed: boolean;
   upstreamClosed: boolean;
 };
+
+export type GatewayWebSocketOptions = Pick<
+  WebSocketHandler<ProxyWebSocketSession>,
+  "maxPayloadLength" | "backpressureLimit" | "closeOnBackpressureLimit" | "idleTimeout"
+>;
 
 function normalizeCloseReason(reason: string): string {
   return reason.length > 123 ? reason.slice(0, 123) : reason;
@@ -95,9 +104,11 @@ async function openUpstreamWebSocket(request: Request, targetUrl: URL) {
 export function createGatewayServer(options?: {
   port?: number;
   config?: GatewayConfig;
+  websocket?: GatewayWebSocketOptions;
 }) {
   const port = options?.port ?? Number(process.env.PORT ?? 3000);
   const config = options?.config ?? parseRoutesFromEnv();
+  const websocketOptions = options?.websocket ?? parseWebSocketOptionsFromEnv();
   const healthPayload = {
     ok: true,
     routes: config.routes.map((route) => ({
@@ -265,7 +276,10 @@ export function createGatewayServer(options?: {
           (ws.data.upstream as any).pong(data);
         }
       },
-      idleTimeout: 0,
+      maxPayloadLength: websocketOptions.maxPayloadLength,
+      backpressureLimit: websocketOptions.backpressureLimit,
+      closeOnBackpressureLimit: websocketOptions.closeOnBackpressureLimit,
+      idleTimeout: websocketOptions.idleTimeout ?? 0,
     },
   });
 
@@ -280,6 +294,47 @@ const sessionClientMap = new WeakMap<
   ProxyWebSocketSession,
   ServerWebSocket<ProxyWebSocketSession>
 >();
+
+function parseWebSocketOptionsFromEnv(
+  env = process.env,
+): GatewayWebSocketOptions {
+  return {
+    maxPayloadLength: parseOptionalInteger(env.WS_MAX_PAYLOAD_LENGTH),
+    backpressureLimit: parseOptionalInteger(env.WS_BACKPRESSURE_LIMIT),
+    closeOnBackpressureLimit: parseOptionalBoolean(env.WS_CLOSE_ON_BACKPRESSURE_LIMIT),
+    idleTimeout: parseOptionalInteger(env.WS_IDLE_TIMEOUT) ?? 0,
+  };
+}
+
+function parseOptionalInteger(raw: string | undefined): number | undefined {
+  if (!raw) {
+    return undefined;
+  }
+
+  const value = Number(raw);
+
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`Expected non-negative integer, received "${raw}".`);
+  }
+
+  return Math.trunc(value);
+}
+
+function parseOptionalBoolean(raw: string | undefined): boolean | undefined {
+  if (!raw) {
+    return undefined;
+  }
+
+  if (raw === "true") {
+    return true;
+  }
+
+  if (raw === "false") {
+    return false;
+  }
+
+  throw new Error(`Expected boolean "true" or "false", received "${raw}".`);
+}
 
 if (import.meta.main) {
   const config = parseRoutesFromEnv();
